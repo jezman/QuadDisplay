@@ -1,62 +1,47 @@
-
-#include <Arduino.h>
-
 #include "QuadDisplay.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include "bcm2835.h"
 
-#include "pins_arduino.h"
+#define PIN RPI_V2_GPIO_P1_13
 
+#define max(x, y) x>y ? x : y
 
-#ifndef _VARIANT_ARDUINO_DUE_X_
-
-#define MACRO_DIGITAL_WRITE(a,b) (fastDigitalWrite(a,b))
-
-    //Fast version of digitalWrite, without using turnOffPWM
-    //
-void fastDigitalWrite(uint8_t pin, uint8_t val)
-{
-      //uint8_t timer = digitalPinToTimer(pin);
-    uint8_t bit = digitalPinToBitMask(pin);
-    uint8_t port = digitalPinToPort(pin);
-    volatile uint8_t *out;
-
-    if (port == NOT_A_PIN) return;
-
-    // If the pin that support PWM output, we need to turn it off
-    // before doing a digital write.
-    // DELETED. Timer is already off here . Amperka
-    // if (timer != NOT_ON_TIMER) turnOffPWM(timer);
-
-    out = portOutputRegister(port);
-
-    uint8_t oldSREG = SREG;
-    cli();
-
-    if (val == LOW) {
-        *out &= ~bit;
-    } else {
-        *out |= bit;
-    }
-
-    SREG = oldSREG;
-}
-
-
-#else
-
-#define MACRO_DIGITAL_WRITE(a,b) (digitalWrite(a,b))
-
-#endif
+#define MACRO_DIGITAL_WRITE(a,b) (bcm2835_gpio_write(a,b))
 
 const static uint8_t numerals[] = {QD_0, QD_1, QD_2, QD_3, QD_4, QD_5, QD_6, QD_7, QD_8, QD_9};
 
-static void sendByte(uint8_t pin, byte data, byte n = 8)
+typedef unsigned char byte;
+
+
+int main(int argc, char **argv, char **envp) {
+
+        if (!bcm2835_init()) exit(EXIT_FAILURE);
+
+        bcm2835_gpio_fsel(PIN, BCM2835_GPIO_FSEL_OUTP);
+
+        if(argc!=2)
+        {
+          displayClear(PIN);
+          return (EXIT_SUCCESS);
+        }
+        displayTemperatureC(PIN, atoi(argv[1]));
+
+        bcm2835_close();
+        return (EXIT_SUCCESS);
+}
+
+static void sendByte(uint8_t pin, byte data)
 {
-    for (byte i = n; i > 0; i--) {
+    for (byte i = 8; i > 0; i--) {
         if (data & 1) {
-            noInterrupts();
+            //noInterrupts();
             MACRO_DIGITAL_WRITE(pin, LOW);
             MACRO_DIGITAL_WRITE(pin, HIGH);
-            interrupts();
+            //interrupts();
             delayMicroseconds(30);
         }
         else {
@@ -72,16 +57,15 @@ static void sendByte(uint8_t pin, byte data, byte n = 8)
 static void latch(uint8_t pin)
 {
     MACRO_DIGITAL_WRITE(pin, LOW);
-    delayMicroseconds(60);
+    delayMicroseconds(100);
     MACRO_DIGITAL_WRITE(pin, HIGH);
     delayMicroseconds(300);
 }
-
 void displayDigits(uint8_t pin, uint8_t digit1, uint8_t digit2, uint8_t digit3, uint8_t digit4)
 {
-    pinMode(pin, OUTPUT);
+    //pinMode(pin, OUTPUT);
     //turnOffPWM work here:
-    digitalWrite(pin, HIGH);
+    MACRO_DIGITAL_WRITE(pin, HIGH);
     sendByte(pin, digit1);
     sendByte(pin, digit2);
     sendByte(pin, digit3);
@@ -94,61 +78,15 @@ void displayClear(uint8_t pin)
     displayDigits(pin, QD_NONE, QD_NONE, QD_NONE, QD_NONE);
 }
 
-
-void displayInt(uint8_t pin, int val, bool padZeros, uint8_t dots)
+void displayTemperatureC(uint8_t pin, int val)
 {
-    uint8_t digits[4] = {0xff, 0xff, 0xff, 0xff};
-
-    if (!padZeros && !val)
-        digits[3] = numerals[0];
-    else {
-        bool negative = val < 0;
-        val = abs(val);
-
-
-        int8_t i;
-        for (i = 4; i--; ) {
-            uint8_t digit = val % 10;
-            digits[i] = (val || padZeros) ? numerals[digit] : 0xff;
-
-            val /= 10;
-            if (!val && !padZeros)
-                break;
-        }
-
-        if (negative)
-            digits[max(0, i-1)] = QD_MINUS;
-
-        for (i = 4; i--; ) {
-            if (dots & (1 << i))
-                digits[4 - i] &= QD_DOT;
-        }
-    }
-
-    displayDigits(pin, digits[0], digits[1], digits[2], digits[3]);
-}
-
-void displayFloat(uint8_t pin, float val, uint8_t precision, bool padZeros)
-{
-    uint8_t dot = 0x1;
-    while (precision) {
-        val *= 10;
-        --precision;
-        dot <<= 1;
-    }
-
-    displayInt(pin, (int)val, padZeros, dot);
-}
-
-void displayTemperatureC(uint8_t pin, int val, bool padZeros)
-{
-
+    int padZeros=0;
     uint8_t digits[4] = {0xff, 0xff, QD_DEGREE, QD_C};
-    
+
     if (!padZeros && !val)
         digits[1] = numerals[0];
     else {
-        bool negative = val < 0;
+        int negative = val < 0;
         val = abs(val);
 
         int8_t i;
